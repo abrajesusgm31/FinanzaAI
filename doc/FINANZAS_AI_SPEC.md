@@ -17,6 +17,7 @@ La aplicación será una plataforma multiusuario para gestión de finanzas perso
   * Storage cuando sea necesario
   * Realtime cuando aporte valor
   * Edge Functions para lógica server-side sensible
+  * la base de datos se sube en código para que supabase la implemente automáticamente mediante un push a GitHub que ya esta configurado
 * Vercel para hosting/deployment
 * Tailwind CSS
 * Componentes UI modernos y accesibles
