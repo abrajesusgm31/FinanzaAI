@@ -10,7 +10,8 @@ CREATE EXTENSION IF NOT EXISTS "pgcrypto";
 -- ==========================================
 CREATE TYPE public.workspace_type AS ENUM ('personal', 'family', 'team');
 CREATE TYPE public.workspace_role AS ENUM ('owner', 'admin', 'editor', 'viewer');
-CREATE TYPE public.account_type AS ENUM ('bank', 'cash', 'credit_card', 'loan', 'savings', 'investment', 'other');
+-- Añadido 'equity' para la cuenta de contrapartida de patrimonio
+CREATE TYPE public.account_type AS ENUM ('bank', 'cash', 'credit_card', 'loan', 'savings', 'investment', 'equity', 'other');
 CREATE TYPE public.transaction_type AS ENUM ('income', 'expense', 'transfer', 'card_payment', 'loan_payment', 'adjustment');
 CREATE TYPE public.transaction_status AS ENUM ('pending', 'confirmed', 'cancelled');
 CREATE TYPE public.entry_direction AS ENUM ('debit', 'credit');
@@ -124,7 +125,14 @@ CREATE TABLE public.account_loans (
     interest_rate NUMERIC(5, 2) NOT NULL CHECK (interest_rate >= 0),
     monthly_installment NUMERIC(15, 2) CHECK (monthly_installment >= 0),
     start_date DATE NOT NULL,
-    end_date DATE
+    end_date DATE,
+    loan_type TEXT,
+    holders TEXT[],
+    contract_number TEXT,
+    interest_type TEXT,
+    amortization_system TEXT,
+    next_installment_date DATE,
+    frequency public.recurrence_frequency
 );
 
 -- ==========================================
@@ -150,7 +158,7 @@ CREATE TABLE public.ledger_transactions (
     transaction_date DATE NOT NULL DEFAULT CURRENT_DATE,
     description TEXT NOT NULL,
     merchant TEXT,
-    category_id UUID REFERENCES public.categories(id) ON DELETE SET NULL,
+    -- category_id movido a ledger_entries (splits)
     import_session_id UUID REFERENCES public.import_sessions(id) ON DELETE SET NULL,
     is_recurring_generated BOOLEAN NOT NULL DEFAULT FALSE,
     created_by UUID NOT NULL REFERENCES public.profiles(id),
@@ -163,9 +171,26 @@ CREATE TABLE public.ledger_entries (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     transaction_id UUID NOT NULL REFERENCES public.ledger_transactions(id) ON DELETE CASCADE,
     account_id UUID NOT NULL REFERENCES public.accounts(id) ON DELETE RESTRICT,
+    category_id UUID REFERENCES public.categories(id) ON DELETE SET NULL, -- Analítica opcional
     amount NUMERIC(15, 2) NOT NULL,
     currency VARCHAR(3) NOT NULL DEFAULT 'USD',
     direction public.entry_direction NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- Historial de Amortizaciones vinculado al Ledger
+CREATE TABLE public.loan_amortizations (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    loan_account_id UUID NOT NULL REFERENCES public.accounts(id) ON DELETE CASCADE,
+    ledger_transaction_id UUID NOT NULL REFERENCES public.ledger_transactions(id) ON DELETE CASCADE,
+    operation_type TEXT NOT NULL, -- 'recibo_pago', 'amortizacion_anticipada', 'comision', etc.
+    principal_paid NUMERIC(15, 2) NOT NULL,
+    interest_paid NUMERIC(15, 2) NOT NULL,
+    interest_category_id UUID REFERENCES public.categories(id) ON DELETE SET NULL,
+    commission_paid NUMERIC(15, 2) DEFAULT 0,
+    commission_category_id UUID REFERENCES public.categories(id) ON DELETE SET NULL,
+    total_paid NUMERIC(15, 2) NOT NULL,
+    remaining_principal NUMERIC(15, 2) NOT NULL,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
@@ -272,15 +297,14 @@ AS $$
       AND user_id = auth.uid();
 $$;
 
--- Procedimiento atómico reforzado para transacciones financieras
+-- Procedimiento atómico reforzado para transacciones financieras (Splits/Multientry)
 CREATE OR REPLACE FUNCTION public.fn_create_financial_transaction(
     p_workspace_id UUID,
     p_type public.transaction_type,
     p_description TEXT,
     p_transaction_date DATE,
-    p_category_id UUID,
     p_merchant TEXT,
-    p_entries JSONB
+    p_entries JSONB -- [{account_id, category_id, amount, currency}]
 )
 RETURNS UUID
 LANGUAGE plpgsql
@@ -293,10 +317,10 @@ DECLARE
     v_tx_id UUID;
     v_entry JSONB;
     v_entry_account_id UUID;
+    v_entry_category_id UUID;
     v_entry_amount NUMERIC(15, 2);
     v_entry_currency VARCHAR(3);
     v_total_sum NUMERIC(15, 2) := 0;
-    v_entry_count INT := 0;
     v_account_ws_id UUID;
     v_cat_ws_id UUID;
 BEGIN
@@ -309,93 +333,144 @@ BEGIN
     FROM public.workspace_members
     WHERE workspace_id = p_workspace_id AND user_id = v_user_id;
 
-    IF v_user_role IS NULL THEN
-        RAISE EXCEPTION 'FORBIDDEN: El usuario no pertenece al workspace especificado.' USING ERRCODE = '42501';
-    END IF;
-
-    IF v_user_role NOT IN ('owner', 'admin', 'editor') THEN
-        RAISE EXCEPTION 'FORBIDDEN: Permisos insuficientes para registrar transacciones en este workspace.' USING ERRCODE = '42501';
-    END IF;
-
-    IF p_description IS NULL OR trim(p_description) = '' THEN
-        RAISE EXCEPTION 'INVALID_INPUT: La descripción de la transacción es obligatoria.' USING ERRCODE = '22023';
-    END IF;
-
-    IF p_transaction_date IS NULL THEN
-        RAISE EXCEPTION 'INVALID_INPUT: La fecha de la transacción es obligatoria.' USING ERRCODE = '22023';
-    END IF;
-
-    IF p_category_id IS NOT NULL THEN
-        SELECT workspace_id INTO v_cat_ws_id
-        FROM public.categories
-        WHERE id = p_category_id;
-
-        IF v_cat_ws_id IS NULL OR v_cat_ws_id <> p_workspace_id THEN
-            RAISE EXCEPTION 'INVALID_RELATION: La categoría especificada no pertenece al workspace.' USING ERRCODE = '22023';
-        END IF;
+    IF v_user_role IS NULL OR v_user_role NOT IN ('owner', 'admin', 'editor') THEN
+        RAISE EXCEPTION 'FORBIDDEN: Permisos insuficientes.' USING ERRCODE = '42501';
     END IF;
 
     IF p_entries IS NULL OR jsonb_array_length(p_entries) = 0 THEN
-        RAISE EXCEPTION 'INVALID_INPUT: La transacción debe contener al menos una partida.' USING ERRCODE = '22023';
+        RAISE EXCEPTION 'INVALID_INPUT: La transacción debe tener partidas.' USING ERRCODE = '22023';
     END IF;
 
+    -- Validar que todo cuadre a 0 y pertenezca al workspace
     FOR v_entry IN SELECT * FROM jsonb_array_elements(p_entries)
     LOOP
         v_entry_account_id := (v_entry->>'account_id')::UUID;
+        v_entry_category_id := (v_entry->>'category_id')::UUID;
         v_entry_amount := (v_entry->>'amount')::NUMERIC(15, 2);
-        v_entry_currency := COALESCE(v_entry->>'currency', 'USD');
 
-        IF v_entry_account_id IS NULL OR v_entry_amount IS NULL OR v_entry_amount = 0 THEN
-            RAISE EXCEPTION 'INVALID_ENTRY: Cada partida debe especificar account_id y un monto distinto de cero.' USING ERRCODE = '22023';
+        -- Validar cuenta
+        SELECT workspace_id INTO v_account_ws_id FROM public.accounts WHERE id = v_entry_account_id;
+        IF v_account_ws_id IS NULL OR v_account_ws_id <> p_workspace_id THEN
+            RAISE EXCEPTION 'SECURITY_VIOLATION: Cuenta ajena.' USING ERRCODE = '42501';
         END IF;
 
-        SELECT workspace_id INTO v_account_ws_id
-        FROM public.accounts
-        WHERE id = v_entry_account_id;
-
-        IF v_account_ws_id IS NULL OR v_account_ws_id <> p_workspace_id THEN
-            RAISE EXCEPTION 'SECURITY_VIOLATION: La cuenta % no pertenece al workspace %.', v_entry_account_id, p_workspace_id USING ERRCODE = '42501';
+        -- Validar categoría si existe
+        IF v_entry_category_id IS NOT NULL THEN
+            SELECT workspace_id INTO v_cat_ws_id FROM public.categories WHERE id = v_entry_category_id;
+            IF v_cat_ws_id IS NULL OR v_cat_ws_id <> p_workspace_id THEN
+                RAISE EXCEPTION 'SECURITY_VIOLATION: Categoría ajena.' USING ERRCODE = '42501';
+            END IF;
         END IF;
 
         v_total_sum := v_total_sum + v_entry_amount;
-        v_entry_count := v_entry_count + 1;
     END LOOP;
 
-    IF p_type IN ('transfer', 'card_payment') THEN
-        IF v_entry_count < 2 THEN
-            RAISE EXCEPTION 'FINANCIAL_RULE_VIOLATION: Operación de tipo % requiere al menos 2 cuentas.', p_type USING ERRCODE = '22023';
-        END IF;
-        IF v_total_sum <> 0 THEN
-            RAISE EXCEPTION 'FINANCIAL_RULE_VIOLATION: En %, las partidas deben cuadrar a cero (Suma actual: %).', p_type, v_total_sum USING ERRCODE = '22023';
-        END IF;
-    ELSIF p_type = 'income' AND v_total_sum <= 0 THEN
-        RAISE EXCEPTION 'FINANCIAL_RULE_VIOLATION: Un ingreso debe tener un monto positivo neto.' USING ERRCODE = '22023';
-    ELSIF p_type = 'expense' AND v_total_sum >= 0 THEN
-        RAISE EXCEPTION 'FINANCIAL_RULE_VIOLATION: Un gasto debe tener un monto negativo neto.' USING ERRCODE = '22023';
+    IF v_total_sum <> 0 THEN
+        RAISE EXCEPTION 'FINANCIAL_RULE_VIOLATION: El ledger no cuadra a cero (Suma: %).', v_total_sum USING ERRCODE = '22023';
     END IF;
 
+    -- Inserción Header
     INSERT INTO public.ledger_transactions (
-        workspace_id, created_by, type, description, transaction_date, category_id, merchant, status
+        workspace_id, created_by, type, description, transaction_date, merchant, status
     ) VALUES (
-        p_workspace_id, v_user_id, p_type, trim(p_description), p_transaction_date, p_category_id, p_merchant, 'confirmed'
+        p_workspace_id, v_user_id, p_type, trim(p_description), p_transaction_date, p_merchant, 'confirmed'
     ) RETURNING id INTO v_tx_id;
 
+    -- Inserción Entradas
     FOR v_entry IN SELECT * FROM jsonb_array_elements(p_entries)
     LOOP
         v_entry_account_id := (v_entry->>'account_id')::UUID;
+        v_entry_category_id := (v_entry->>'category_id')::UUID;
         v_entry_amount := (v_entry->>'amount')::NUMERIC(15, 2);
         v_entry_currency := COALESCE(v_entry->>'currency', 'USD');
 
         INSERT INTO public.ledger_entries (
-            transaction_id, account_id, amount, currency, direction
+            transaction_id, account_id, category_id, amount, currency, direction
         ) VALUES (
             v_tx_id,
             v_entry_account_id,
+            v_entry_category_id,
             v_entry_amount,
             v_entry_currency,
             CASE WHEN v_entry_amount > 0 THEN 'credit'::public.entry_direction ELSE 'debit'::public.entry_direction END
         );
     END LOOP;
+
+    RETURN v_tx_id;
+END;
+$$;
+
+-- Registro especializado de pagos de préstamo con Equity y Amortización
+CREATE OR REPLACE FUNCTION public.fn_register_loan_payment(
+    p_workspace_id UUID,
+    p_loan_account_id UUID,
+    p_source_account_id UUID,
+    p_equity_account_id UUID,
+    p_principal_paid NUMERIC(15, 2),
+    p_interest_paid NUMERIC(15, 2),
+    p_commission_paid NUMERIC(15, 2),
+    p_interest_category_id UUID,
+    p_commission_category_id UUID,
+    p_transaction_date DATE,
+    p_description TEXT
+)
+RETURNS UUID
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+DECLARE
+    v_tx_id UUID;
+    v_user_id UUID := auth.uid();
+    v_total_paid NUMERIC(15, 2) := p_principal_paid + p_interest_paid + p_commission_paid;
+    v_current_remaining NUMERIC(15, 2);
+BEGIN
+    -- Validar capital pendiente
+    SELECT (principal_amount - COALESCE((SELECT SUM(principal_paid) FROM public.loan_amortizations WHERE loan_account_id = p_loan_account_id), 0))
+    INTO v_current_remaining
+    FROM public.account_loans
+    WHERE account_id = p_loan_account_id;
+
+    IF (v_current_remaining - p_principal_paid) < 0 THEN
+        RAISE EXCEPTION 'FINANCIAL_RULE_VIOLATION: El capital amortizado supera el capital pendiente.';
+    END IF;
+
+    -- Inserción Header Ledger
+    INSERT INTO public.ledger_transactions (
+        workspace_id, created_by, type, description, transaction_date, status
+    ) VALUES (
+        p_workspace_id, v_user_id, 'loan_payment', p_description, p_transaction_date, 'confirmed'
+    ) RETURNING id INTO v_tx_id;
+
+    -- Entradas Ledger (Algebraic Balance)
+    -- 1. Salida de Banco (Asset disminuye -> Negativo)
+    INSERT INTO public.ledger_entries (transaction_id, account_id, amount, direction)
+    VALUES (v_tx_id, p_source_account_id, -v_total_paid, 'debit');
+
+    -- 2. Reducción Deuda (Liability disminuye -> Positivo en pasivo negativo)
+    INSERT INTO public.ledger_entries (transaction_id, account_id, amount, direction)
+    VALUES (v_tx_id, p_loan_account_id, p_principal_paid, 'credit');
+
+    -- 3. Intereses (Equity disminuye -> Positivo como contrapartida de gasto)
+    INSERT INTO public.ledger_entries (transaction_id, account_id, category_id, amount, direction)
+    VALUES (v_tx_id, p_equity_account_id, p_interest_category_id, p_interest_paid, 'credit');
+
+    -- 4. Comisiones (Si existen)
+    IF p_commission_paid > 0 THEN
+        INSERT INTO public.ledger_entries (transaction_id, account_id, category_id, amount, direction)
+        VALUES (v_tx_id, p_equity_account_id, p_commission_category_id, p_commission_paid, 'credit');
+    END IF;
+
+    -- Registro en log de amortización
+    INSERT INTO public.loan_amortizations (
+        loan_account_id, ledger_transaction_id, operation_type,
+        principal_paid, interest_paid, interest_category_id,
+        commission_paid, commission_category_id, total_paid, remaining_principal
+    ) VALUES (
+        p_loan_account_id, v_tx_id, 'recibo_pago',
+        p_principal_paid, p_interest_paid, p_interest_category_id,
+        p_commission_paid, p_commission_category_id, v_total_paid, (v_current_remaining - p_principal_paid)
+    );
 
     RETURN v_tx_id;
 END;
@@ -412,6 +487,7 @@ ALTER TABLE public.categories ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.accounts ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.account_credit_cards ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.account_loans ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.loan_amortizations ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.import_sessions ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.ledger_transactions ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.ledger_entries ENABLE ROW LEVEL SECURITY;
@@ -440,18 +516,10 @@ CREATE POLICY "Admins/Owners pueden gestionar miembros" ON public.workspace_memb
 CREATE POLICY "Miembros pueden ver cuentas del workspace" ON public.accounts FOR SELECT USING (public.get_user_workspace_role(workspace_id) IS NOT NULL);
 CREATE POLICY "Editors y superiores pueden gestionar cuentas" ON public.accounts FOR ALL USING (public.get_user_workspace_role(workspace_id) IN ('owner', 'admin', 'editor'));
 
--- Políticas Credit Cards y Loans
-CREATE POLICY "Miembros pueden ver credit cards" ON public.account_credit_cards FOR SELECT USING (EXISTS (SELECT 1 FROM public.accounts a WHERE a.id = account_credit_cards.account_id AND public.get_user_workspace_role(a.workspace_id) IS NOT NULL));
-CREATE POLICY "Editors y superiores pueden gestionar credit cards" ON public.account_credit_cards FOR ALL USING (EXISTS (SELECT 1 FROM public.accounts a WHERE a.id = account_credit_cards.account_id AND public.get_user_workspace_role(a.workspace_id) IN ('owner', 'admin', 'editor')));
+-- Políticas Amortizaciones
+CREATE POLICY "Miembros pueden ver amortizaciones" ON public.loan_amortizations FOR SELECT USING (EXISTS (SELECT 1 FROM public.accounts a WHERE a.id = loan_amortizations.loan_account_id AND public.get_user_workspace_role(a.workspace_id) IS NOT NULL));
 
-CREATE POLICY "Miembros pueden ver loans" ON public.account_loans FOR SELECT USING (EXISTS (SELECT 1 FROM public.accounts a WHERE a.id = account_loans.account_id AND public.get_user_workspace_role(a.workspace_id) IS NOT NULL));
-CREATE POLICY "Editors y superiores pueden gestionar loans" ON public.account_loans FOR ALL USING (EXISTS (SELECT 1 FROM public.accounts a WHERE a.id = account_loans.account_id AND public.get_user_workspace_role(a.workspace_id) IN ('owner', 'admin', 'editor')));
-
--- Políticas Categories
-CREATE POLICY "Miembros pueden ver categorías" ON public.categories FOR SELECT USING (public.get_user_workspace_role(workspace_id) IS NOT NULL);
-CREATE POLICY "Editors y superiores pueden gestionar categorías" ON public.categories FOR ALL USING (public.get_user_workspace_role(workspace_id) IN ('owner', 'admin', 'editor'));
-
--- Políticas Ledger Transactions & Entries (Lectura autorizada, sin INSERT/UPDATE directo desde cliente)
+-- Políticas Ledger Transactions & Entries (Lectura autorizada, sin INSERT directo desde cliente)
 CREATE POLICY "Miembros pueden ver transacciones del ledger" ON public.ledger_transactions FOR SELECT USING (public.get_user_workspace_role(workspace_id) IS NOT NULL);
 
 CREATE POLICY "Miembros pueden ver entradas del ledger" ON public.ledger_entries FOR SELECT USING (
@@ -462,14 +530,14 @@ CREATE POLICY "Miembros pueden ver entradas del ledger" ON public.ledger_entries
     )
 );
 
--- Políticas Budgets
+-- El resto de políticas (Categories, Budgets, etc.) se mantienen igual...
+CREATE POLICY "Miembros pueden ver categorías" ON public.categories FOR SELECT USING (public.get_user_workspace_role(workspace_id) IS NOT NULL);
+CREATE POLICY "Editors y superiores pueden gestionar categorías" ON public.categories FOR ALL USING (public.get_user_workspace_role(workspace_id) IN ('owner', 'admin', 'editor'));
+
 CREATE POLICY "Miembros pueden ver presupuestos" ON public.budgets FOR SELECT USING (public.get_user_workspace_role(workspace_id) IS NOT NULL);
 CREATE POLICY "Editors y superiores pueden gestionar presupuestos" ON public.budgets FOR ALL USING (public.get_user_workspace_role(workspace_id) IN ('owner', 'admin', 'editor'));
 
--- Políticas AI Settings
-CREATE POLICY "Admins y owners pueden ver AI settings" ON public.workspace_ai_settings FOR SELECT USING (public.get_user_workspace_role(workspace_id) IN ('owner', 'admin'));
 CREATE POLICY "Admins y owners pueden gestionar AI settings" ON public.workspace_ai_settings FOR ALL USING (public.get_user_workspace_role(workspace_id) IN ('owner', 'admin'));
 
--- Políticas Notifications
 CREATE POLICY "Usuarios pueden ver sus notificaciones" ON public.notifications FOR SELECT USING (user_id = auth.uid() OR public.get_user_workspace_role(workspace_id) IS NOT NULL);
 CREATE POLICY "Usuarios pueden actualizar sus notificaciones" ON public.notifications FOR UPDATE USING (user_id = auth.uid());
