@@ -20,7 +20,7 @@ export default async function DashboardLayout({
 
   const workspaces = await WorkspaceService.listWorkspaces();
   const cookieStore = await cookies();
-  const activeWorkspaceId = cookieStore.get('activeWorkspaceId')?.value || (workspaces && workspaces.length > 0 ? workspaces[0].id : '');
+  const activeWorkspaceId = cookieStore.get('activeWorkspaceId')?.value || (workspaces && workspaces.length > 0 && workspaces[0] ? (workspaces[0] as any).id : '');
 
   return (
     <div className="min-h-screen flex bg-slate-50">
