@@ -27,13 +27,12 @@ export class WorkspaceService {
     
     if (!user) throw new Error('User not authenticated');
 
-    // 1. Crear workspace
+    // 1. Crear workspace (ya no enviamos created_by, la BD lo pone con auth.uid())
     const { data: workspace, error: wsError } = await supabase
       .from('workspaces')
       .insert({
         name,
-        type,
-        created_by: user.id
+        type
       })
       .select()
       .single();
