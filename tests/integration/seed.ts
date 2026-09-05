@@ -55,5 +55,11 @@ export async function seedDatabase() {
     start_date: '2026-01-01'
   });
 
-  return { user1, user2, ws1, ws2, accounts };
+  // 6. Create Category
+  const { data: category, error: catErr } = await adminSupabase.from('categories').insert({
+      workspace_id: ws1.id, name: 'InterestCat'
+  }).select().single();
+  if (catErr) throw catErr;
+
+  return { user1, user2, ws1, ws2, accounts, category };
 }

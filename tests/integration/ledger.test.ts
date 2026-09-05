@@ -21,21 +21,23 @@ describe('Ledger Integration Tests', () => {
   });
 
   it('2. Roles: should reject transaction creation for viewer role', async () => {
-    await adminSupabase.from('workspace_members').upsert({
-      workspace_id: seed.ws1.id,
-      user_id: seed.user1.user!.id,
-      role: 'viewer'
-    });
+    await adminSupabase.from('workspace_members').update({ role: 'viewer' })
+      .eq('workspace_id', seed.ws1.id).eq('user_id', seed.user1.user!.id);
+    
     const { error } = await authSupabase.rpc('fn_create_financial_transaction', {
       p_workspace_id: seed.ws1.id,
       p_type: 'expense',
       p_description: 'Forbidden',
       p_transaction_date: '2026-09-05',
       p_merchant: null,
-      p_entries: [{ account_id: seed.accounts[0].id, amount: -10, direction: 'debit', category_id: null }]
+      p_entries: JSON.stringify([{ account_id: seed.accounts[0].id, amount: -10, category_id: null }])
     });
     
     expect(error?.message).toContain('FORBIDDEN');
+    
+    // Reset to owner
+    await adminSupabase.from('workspace_members').update({ role: 'owner' })
+      .eq('workspace_id', seed.ws1.id).eq('user_id', seed.user1.user!.id);
   });
 
   it('3. Direct Insert: should reject direct insert into ledger_transactions', async () => {
@@ -54,7 +56,7 @@ describe('Ledger Integration Tests', () => {
       p_description: 'Invalid sum',
       p_transaction_date: '2026-09-05',
       p_merchant: null,
-      p_entries: [{ account_id: seed.accounts[0].id, amount: 100, direction: 'credit', category_id: null }]
+      p_entries: JSON.stringify([{ account_id: seed.accounts[0].id, amount: 100, direction: 'credit', category_id: null }])
     });
     expect(error?.message).toContain('FINANCIAL_RULE_VIOLATION');
   });
@@ -66,10 +68,10 @@ describe('Ledger Integration Tests', () => {
       p_description: 'Invalid account',
       p_transaction_date: '2026-09-05',
       p_merchant: null,
-      p_entries: [
-        { account_id: seed.accounts[0].id, amount: -10, direction: 'debit', category_id: null },
-        { account_id: '00000000-0000-0000-0000-000000000000', amount: 10, direction: 'credit', category_id: null }
-      ]
+      p_entries: JSON.stringify([
+        { account_id: seed.accounts[0].id, amount: -10, category_id: null },
+        { account_id: '00000000-0000-0000-0000-000000000000', amount: 10, category_id: null }
+      ])
     });
     expect(error?.message).toContain('SECURITY_VIOLATION');
   });
@@ -87,7 +89,7 @@ describe('Ledger Integration Tests', () => {
       p_principal_paid: 999999,
       p_interest_paid: 0,
       p_commission_paid: 0,
-      p_interest_category_id: seed.accounts[0].id, // Dummy ID, but let's assume it's ignored or fails
+      p_interest_category_id: seed.category.id,
       p_commission_category_id: null,
       p_transaction_date: '2026-09-05',
       p_description: 'Overpayment'
@@ -107,10 +109,10 @@ describe('Ledger Integration Tests', () => {
        p_description: 'Rollback test',
        p_transaction_date: '2026-09-05',
        p_merchant: null,
-       p_entries: [
-         { account_id: seed.accounts[0].id, amount: -100, direction: 'debit', category_id: null },
-         { account_id: '00000000-0000-0000-0000-000000000000', amount: 100, direction: 'credit', category_id: null }
-       ]
+       p_entries: JSON.stringify([
+         { account_id: seed.accounts[0].id, amount: -100, category_id: null },
+         { account_id: '00000000-0000-0000-0000-000000000000', amount: 100, category_id: null }
+       ])
      });
      expect(error).toBeDefined();
   });

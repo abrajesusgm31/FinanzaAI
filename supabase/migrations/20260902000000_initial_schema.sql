@@ -344,8 +344,14 @@ BEGIN
     FROM public.workspace_members
     WHERE workspace_id = p_workspace_id AND user_id = v_user_id;
 
+    -- DEBUG
+    -- RAISE NOTICE 'Checking role for user % in workspace %: %', v_user_id, p_workspace_id, v_user_role;
+
+    -- DEBUG
+    RAISE NOTICE 'DEBUG: User: %, Workspace: %, Role Found: %', v_user_id, p_workspace_id, v_user_role;
+    
     IF v_user_role IS NULL OR v_user_role NOT IN ('owner', 'admin', 'editor') THEN
-        RAISE EXCEPTION 'FORBIDDEN: Permisos insuficientes.' USING ERRCODE = '42501';
+        RAISE EXCEPTION 'FORBIDDEN: Permisos insuficientes para el usuario % en el workspace %.', v_user_id, p_workspace_id USING ERRCODE = '42501';
     END IF;
 
     IF p_entries IS NULL OR jsonb_array_length(p_entries) = 0 THEN
@@ -441,6 +447,13 @@ BEGIN
     INTO v_current_remaining
     FROM public.account_loans
     WHERE account_id = p_loan_account_id;
+
+    IF v_current_remaining IS NULL THEN
+        RAISE EXCEPTION 'INTERNAL_ERROR: No se pudo obtener el saldo pendiente del préstamo.';
+    END IF;
+    
+    -- Si es el primer pago, v_current_remaining será igual al principal_amount
+    -- COALESCE está bien ahí
 
     IF (v_current_remaining - p_principal_paid) < 0 THEN
         RAISE EXCEPTION 'FINANCIAL_RULE_VIOLATION: El capital amortizado supera el capital pendiente.';
