@@ -1,6 +1,7 @@
 import { createClient } from '@/lib/supabase/server';
 import { WorkspaceService } from '@/lib/services/financial/WorkspaceService';
 import { redirect } from 'next/navigation';
+import { cookies } from 'next/headers';
 import Link from 'next/link';
 import { LayoutDashboard, Wallet, ArrowLeftRight, CreditCard, PieChart, Repeat, LogOut } from 'lucide-react';
 import { WorkspaceHeaderClient } from '@/components/WorkspaceHeaderClient';
@@ -18,6 +19,8 @@ export default async function DashboardLayout({
   }
 
   const workspaces = await WorkspaceService.listWorkspaces();
+  const cookieStore = await cookies();
+  const activeWorkspaceId = cookieStore.get('activeWorkspaceId')?.value || (workspaces.length > 0 ? workspaces[0].id : '');
 
   return (
     <div className="min-h-screen flex bg-slate-50">
@@ -65,7 +68,7 @@ export default async function DashboardLayout({
 
       {/* Main Content Area */}
       <div className="flex-1 md:pl-64 flex flex-col min-w-0">
-        <WorkspaceHeaderClient userEmail={user.email || ''} initialWorkspaces={workspaces} />
+        <WorkspaceHeaderClient userEmail={user.email || ''} initialWorkspaces={workspaces} activeWorkspaceId={activeWorkspaceId} />
 
         <main className="flex-1 p-6 md:p-8">
           {children}

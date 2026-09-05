@@ -1,17 +1,15 @@
 'use client';
 
 import { useState } from 'react';
-import { createWorkspaceAction } from '@/app/actions/workspace';
+import { createWorkspaceAction, setActiveWorkspaceAction } from '@/app/actions/workspace';
 import { Plus, Building2, Check, ChevronDown } from 'lucide-react';
 
 export function WorkspaceSwitcher({
   workspaces,
   currentWorkspaceId,
-  onSelectWorkspace,
 }: {
   workspaces: any[];
   currentWorkspaceId: string;
-  onSelectWorkspace: (id: string) => void;
 }) {
   const [isOpen, setIsOpen] = useState(false);
   const [showModal, setShowModal] = useState(false);
@@ -24,16 +22,18 @@ export function WorkspaceSwitcher({
     setLoading(true);
     const formData = new FormData(e.currentTarget);
     try {
-      const newWs = await createWorkspaceAction(formData);
+      await createWorkspaceAction(formData);
       setShowModal(false);
-      if (newWs && newWs.id) {
-        onSelectWorkspace(newWs.id);
-      }
     } catch (err: any) {
       alert(err.message || 'Error al crear workspace');
     } finally {
       setLoading(false);
     }
+  };
+
+  const handleSelect = async (id: string) => {
+    await setActiveWorkspaceAction(id);
+    setIsOpen(false);
   };
 
   return (
@@ -55,10 +55,7 @@ export function WorkspaceSwitcher({
           {workspaces.map((ws) => (
             <button
               key={ws.id}
-              onClick={() => {
-                onSelectWorkspace(ws.id);
-                setIsOpen(false);
-              }}
+              onClick={() => handleSelect(ws.id)}
               className="w-full flex items-center justify-between px-3 py-2 rounded-lg text-xs text-left text-slate-700 hover:bg-slate-50 transition-colors"
             >
               <span className="font-medium truncate">{ws.name}</span>
