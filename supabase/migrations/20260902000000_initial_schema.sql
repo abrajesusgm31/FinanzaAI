@@ -281,9 +281,20 @@ CREATE INDEX idx_ledger_entries_tx ON public.ledger_entries (transaction_id);
 CREATE INDEX idx_ws_members_user_ws ON public.workspace_members (user_id, workspace_id);
 CREATE INDEX idx_recurring_rules_next_run ON public.recurring_rules (workspace_id, next_run_date) WHERE is_active = TRUE;
 
--- ==========================================
--- 11. FUNCIONES AUXILIARES Y DE SEGURIDAD
--- ==========================================
+-- Retorna el patrimonio neto (Suma de Activos y Pasivos)
+CREATE OR REPLACE FUNCTION public.fn_get_workspace_net_worth(p_workspace_id UUID)
+RETURNS NUMERIC(15, 2)
+LANGUAGE sql
+STABLE
+SECURITY DEFINER
+SET search_path = public
+AS $$
+    SELECT COALESCE(SUM(amount), 0)
+    FROM public.ledger_entries le
+    JOIN public.accounts a ON le.account_id = a.id
+    WHERE a.workspace_id = p_workspace_id 
+      AND a.type IN ('bank', 'cash', 'credit_card', 'loan', 'savings', 'investment');
+$$;
 CREATE OR REPLACE FUNCTION public.get_user_workspace_role(target_workspace_id UUID)
 RETURNS public.workspace_role
 LANGUAGE sql

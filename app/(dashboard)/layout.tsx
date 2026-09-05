@@ -1,7 +1,9 @@
 import { createClient } from '@/lib/supabase/server';
+import { WorkspaceService } from '@/lib/services/financial/WorkspaceService';
 import { redirect } from 'next/navigation';
 import Link from 'next/link';
-import { LayoutDashboard, Wallet, ArrowLeftRight, CreditCard, PieChart, Repeat, Settings, LogOut } from 'lucide-react';
+import { LayoutDashboard, Wallet, ArrowLeftRight, CreditCard, PieChart, Repeat, LogOut } from 'lucide-react';
+import { WorkspaceHeaderClient } from '@/components/WorkspaceHeaderClient';
 
 export default async function DashboardLayout({
   children,
@@ -14,6 +16,8 @@ export default async function DashboardLayout({
   if (!user) {
     redirect('/login');
   }
+
+  const workspaces = await WorkspaceService.listWorkspaces();
 
   return (
     <div className="min-h-screen flex bg-slate-50">
@@ -29,39 +33,21 @@ export default async function DashboardLayout({
         <nav className="flex-1 px-4 py-6 space-y-1">
           <Link
             href="/dashboard"
-            className="flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium text-indigo-600 bg-indigo-50 transition-colors"
+            className="flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium text-slate-700 hover:text-indigo-600 hover:bg-indigo-50 transition-colors"
           >
-            <LayoutDashboard className="w-5 h-5" /> Dashboard
+            <LayoutDashboard className="w-5 h-5 text-indigo-600" /> Dashboard
           </Link>
           <Link
             href="/accounts"
-            className="flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium text-slate-600 hover:text-slate-900 hover:bg-slate-50 transition-colors"
+            className="flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium text-slate-700 hover:text-indigo-600 hover:bg-indigo-50 transition-colors"
           >
-            <Wallet className="w-5 h-5" /> Cuentas
+            <Wallet className="w-5 h-5 text-slate-500" /> Cuentas
           </Link>
           <Link
             href="/transactions"
-            className="flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium text-slate-600 hover:text-slate-900 hover:bg-slate-50 transition-colors"
+            className="flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium text-slate-700 hover:text-indigo-600 hover:bg-indigo-50 transition-colors"
           >
-            <ArrowLeftRight className="w-5 h-5" /> Transacciones
-          </Link>
-          <Link
-            href="/cards"
-            className="flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium text-slate-600 hover:text-slate-900 hover:bg-slate-50 transition-colors"
-          >
-            <CreditCard className="w-5 h-5" /> Tarjetas
-          </Link>
-          <Link
-            href="/budgets"
-            className="flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium text-slate-600 hover:text-slate-900 hover:bg-slate-50 transition-colors"
-          >
-            <PieChart className="w-5 h-5" /> Presupuestos
-          </Link>
-          <Link
-            href="/recurring"
-            className="flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium text-slate-600 hover:text-slate-900 hover:bg-slate-50 transition-colors"
-          >
-            <Repeat className="w-5 h-5" /> Recurrentes
+            <ArrowLeftRight className="w-5 h-5 text-slate-500" /> Transacciones
           </Link>
         </nav>
 
@@ -79,12 +65,7 @@ export default async function DashboardLayout({
 
       {/* Main Content Area */}
       <div className="flex-1 md:pl-64 flex flex-col min-w-0">
-        <header className="h-16 bg-white border-b border-slate-200 sticky top-0 z-20 flex items-center justify-between px-6">
-          <h2 className="font-semibold text-slate-800">Panel Financiero</h2>
-          <div className="flex items-center gap-3">
-            <span className="text-sm text-slate-600 font-medium">{user.email}</span>
-          </div>
-        </header>
+        <WorkspaceHeaderClient userEmail={user.email || ''} initialWorkspaces={workspaces} />
 
         <main className="flex-1 p-6 md:p-8">
           {children}

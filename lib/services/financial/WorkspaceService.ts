@@ -1,5 +1,6 @@
 import { createClient } from '@/lib/supabase/server';
 import { Database } from '@/types/database.types';
+import { CategoryService } from './CategoryService';
 
 export type WorkspaceInsert = Database['public']['Tables']['workspaces']['Insert'];
 
@@ -62,6 +63,9 @@ export class WorkspaceService {
       });
 
     if (equityError) throw equityError;
+
+    // 4. Sembrar categorías iniciales por defecto
+    await CategoryService.seedDefaultCategories(workspace.id);
 
     return workspace;
   }

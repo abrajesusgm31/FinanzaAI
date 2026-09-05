@@ -7,7 +7,8 @@
     "build": "next build",
     "start": "next start",
     "lint": "next lint",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test:integration": "vitest --config vitest.config.ts tests/integration"
   },
   "dependencies": {
     "@supabase/ssr": "^0.5.2",
@@ -20,12 +21,13 @@
     "tailwind-merge": "^3.0.2"
   },
   "devDependencies": {
-    "@types/node": "^22.13.8",
+    "@types/node": "^22.20.1",
     "@types/react": "^19.0.10",
     "@types/react-dom": "^19.0.4",
     "autoprefixer": "^10.4.20",
     "postcss": "^8.5.3",
     "tailwindcss": "^3.4.17",
-    "typescript": "^5.7.3"
+    "typescript": "^5.7.3",
+    "vitest": "^3.0.7"
   }
 }
