@@ -6,14 +6,14 @@ import { WorkspaceSwitcher } from './WorkspaceSwitcher';
 export function WorkspaceHeaderClient({
   userEmail,
   initialWorkspaces,
+  activeWorkspaceId,
 }: {
   userEmail: string;
   initialWorkspaces: any[];
+  activeWorkspaceId: string;
 }) {
-  const [workspaces, setWorkspaces] = useState(initialWorkspaces);
-  const [currentWorkspaceId, setCurrentWorkspaceId] = useState(
-    initialWorkspaces.length > 0 ? initialWorkspaces[0].id : ''
-  );
+  const [workspaces] = useState(initialWorkspaces);
+  const [currentWorkspaceId, setCurrentWorkspaceId] = useState(activeWorkspaceId);
 
   return (
     <header className="h-16 bg-white border-b border-slate-200 sticky top-0 z-20 flex items-center justify-between px-6">
@@ -23,7 +23,6 @@ export function WorkspaceHeaderClient({
           <WorkspaceSwitcher
             workspaces={workspaces}
             currentWorkspaceId={currentWorkspaceId}
-            onSelectWorkspace={(id) => setCurrentWorkspaceId(id)}
           />
         ) : (
           <span className="text-xs text-slate-400">Sin workspace</span>
